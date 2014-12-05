@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var mdHtml, mdSrc, permalink;
+  var mdHtml, mdSrc, permalink, scrollMap, codeMirror;
 
   var defaults = {
     html:         false,        // Enable HTML tags in source
@@ -63,6 +63,16 @@
     mdHtml.renderer.rules.table_open = function () {
       return '<table class="table table-striped">\n';
     };
+
+    mdHtml.renderer.rules.paragraph_open = function (tokens, idx) {
+      var line = tokens[idx].lines ? tokens[idx].lines[0] : '';
+      return '<p class="line" data-line="' + line + '">';
+    };
+
+    mdHtml.renderer.rules.heading_open = function (tokens, idx) {
+      var line = tokens[idx].lines ? tokens[idx].lines[0] : '';
+      return '<h' + tokens[idx].hLevel + ' class="line" data-line="' + line + '">';
+    };
   }
 
   function updateResult() {
@@ -70,6 +80,7 @@
 
     $('.result-html').html(mdHtml.render(source));
     $('.result-src-content').html(window.hljs.highlight('html', mdSrc.render(source)).value);
+    scrollMap = null;
 
     var dump = JSON.stringify(mdSrc.parse(source, { references: {} }), null, 2);
     $('.result-debug-content').html(window.hljs.highlight('json', dump).value);
@@ -89,6 +100,80 @@
     }
   }
 
+  function caretFromPoint(x, y) {
+    if (typeof(document.caretPositionFromPoint) === 'function') {
+      // newer W3C draft, supported by Gecko (Firefox)
+      return document.caretPositionFromPoint(~~x, ~~y).offset;
+    } else if (typeof(document.caretRangeFromPoint) === 'function') {
+      // older W3C draft, supported by WebKit (Chromium and forks)
+      // return document.caretRangeFromPoint(~~x, ~~y).startOffset;
+    } else {
+      // we can try to use `TextRange.moveToPoint(x, y)` for IE,
+      // but I don't have one to test this
+    }
+  }
+
+  function recomputeScroll() {
+    var i, offset, nonEmptyList, pos, a, b, d,
+        textarea = $('.source'),
+        linesCount = textarea.val().split('\n').length;
+
+    offset = $('.result-html').scrollTop() - $('.result-html').offset().top;
+    scrollMap = [];
+    nonEmptyList = [];
+    for (i = 0; i < linesCount; i++) { scrollMap.push(-1); }
+
+    nonEmptyList.push(0);
+    scrollMap[0] = 0;
+
+    $('.line').each(function(n, el) {
+      var $el = $(el), t = $el.data('line');
+      if (t === '') { return; }
+      nonEmptyList.push(t);
+      scrollMap[t] = Math.round($el.offset().top + offset);
+    });
+
+    nonEmptyList.push(linesCount);
+    scrollMap[linesCount] = $('.result-html')[0].scrollHeight;
+
+    pos = 0;
+    for (i = 1; i < linesCount; i++) {
+      if (scrollMap[i] !== -1) {
+        pos++;
+        continue;
+      }
+
+      a = nonEmptyList[pos];
+      b = nonEmptyList[pos + 1];
+      scrollMap[i] = Math.round((scrollMap[b] * (i - a) + scrollMap[a] * (b - i)) / (b - a));
+    }
+
+    return scrollMap;
+  }
+
+  function syncScroll() {
+    var textarea  = $('.source'),
+        offset    = textarea.offset(),
+        skipLines,
+        caretPos,
+        lineNo,
+        scrollTo;
+
+/*    caretPos = caretFromPoint(offset.left + 5, offset.top + 5);
+    if (!caretPos || caretPos === 1) {
+      caretPos = caretFromPoint(offset.left + 5, offset.top + 15);
+    }
+    if (!caretPos || caretPos === 1) {
+      return;
+    }
+
+    lineNo = textarea.val().slice(0, caretPos).split('\n').length;*/
+    lineNo = codeMirror.getViewport().from;
+
+    if (!scrollMap) { recomputeScroll(); }
+
+    $('.result-html').scrollTop(scrollMap[lineNo]);
+  }
 
   $(function() {
     // highlight snippet
@@ -178,8 +263,15 @@
     mdInit();
     permalink = document.getElementById('permalink');
 
+    codeMirror = window.CodeMirror.fromTextArea($('.source')[0], {
+      lineWrapping: true
+    });
+
     // Setup listeners
     $('.source').on('keyup paste cut mouseup', updateResult);
+    //$('.source').on('scroll', syncScroll);
+    codeMirror.on('viewportChange', syncScroll);
+    //$('.CodeMirror .CodeMirror-scroll').on('scroll', syncScroll);
 
     $('.source-clear').on('click', function (event) {
       $('.source').val('');
